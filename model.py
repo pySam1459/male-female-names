@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 
 def init_(m: nn.Module) -> None:
+    """Initialize the weights and biases of a module"""
     if isinstance(m, nn.Linear):
         torch.nn.init.normal_(m.weight, mean=0.0, std=0.15)
         if m.bias is not None:
@@ -29,6 +30,7 @@ class SelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         
+        ## note: is_causal=False for full self-attention
         y: torch.Tensor = F.scaled_dot_product_attention(q, k, v,
                         attn_mask=None, dropout_p=self.dropout, is_causal=False)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
@@ -46,7 +48,11 @@ class SelfAttnModel(nn.Module):
         self.n_embd = n_embd
         self.emb = nn.Embedding(n_vocab, n_embd)
         self.pse = nn.Embedding(max_length, n_embd)
-        self.csa = SelfAttention(n_embd, 4, 0.1)
+
+        ## self attention
+        self.sattn = SelfAttention(n_embd, 4, 0.1)
+
+        ## linear model
         self.lin1 = nn.Linear(n_embd*max_length, n_embd*4)
         self.dropout = nn.Dropout(dropout)
         self.lin2 = nn.Linear(n_embd*4, n_embd)
@@ -56,9 +62,11 @@ class SelfAttnModel(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B,T = x.size()
+        ## character and positional embedding
         x = self.emb(x) + self.pse(torch.arange(T, device=x.device))
-        x = self.csa(x).view(B, -1)
+        x = self.sattn(x).view(B, -1) ## apply self attention
         
+        ## apply linear model, gelu inspired by gpt-2
         x = F.gelu(self.lin1(x))
         x = self.dropout(x)
         x = F.gelu(self.lin2(x))
@@ -71,6 +79,8 @@ class LinModel(nn.Module):
         super(LinModel, self).__init__()
         self.emb = nn.Embedding(n_vocab, n_embd)
         self.pse  = nn.Embedding(max_length, n_embd)
+
+        ## linear model has addition layer
         self.lin1 = nn.Linear(n_embd*max_length, n_embd*4)
         self.dropout = nn.Dropout(dropout)
         self.lin2 = nn.Linear(n_embd*4, n_embd)
@@ -78,8 +88,9 @@ class LinModel(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B,T = x.size()
-        x = self.emb(x) + self.pse(torch.arange(T, device=x.device))
-        x = x.view(B, -1)
+        x = self.emb(x) + self.pse(torch.arange(T, device=x.device)) # (B,T,C)
+        x = x.view(B, -1) # (B, T*C), T = max_length
+
         x = F.gelu(self.lin1(x))
         x = self.dropout(x)
         x = F.gelu(self.lin2(x))
